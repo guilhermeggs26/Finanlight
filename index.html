@@ -639,13 +639,28 @@ function scAcertos(){
   (pays.length?`<div class=ct>Pix recebidos</div><div class="card flush list">${pays.slice(0,8).map(x=>`<button class=row data-a=delPay data-id="${x.id}"><span class=grow><span class=ttl>${ddmm(x.date)}</span><span class=meta>${x.card?esc(cardName(x.card)):"Qualquer cartão"}</span></span><span class="amt num ok-t">${money(x.amount)}</span></button>`).join('')}</div>`:'')+
   (ps.credit>0?`<p class=meta style="text-align:center">Crédito a favor de ${esc(p.name)}: ${money(ps.credit)}</p>`:'');
 }
+// Mensagem para WhatsApp: blocos por data de pagamento, compras agrupadas por cartão
 function acertoMsg(pid){
-  const p=S.people.find(x=>x.id===pid),R=curRange(),ps=personSummary(pid,R),L=[`*Acerto ${p.name} – ${cap(MES[R.start.getMonth()])}*`];
-  if(ps.prevLeft>0){L.push('','*Pendente de meses anteriores*');ps.prev.filter(i=>i.left>0).forEach(i=>L.push(`• ${ddmm(i.date)} ${i.e.desc||catName(i.e.cat)}: ${money(i.left)}`));L.push(`Subtotal: ${money(ps.prevLeft)}`)}
-  groupByPay(ps.cur.filter(i=>i.left>0)).forEach(([d,its])=>{L.push('',`*Pagar até ${ddmm(d)}*`);
-    its.forEach(i=>{const n=i.parcel?i.parcel.n-i.parcel.i:0;L.push(`• ${ddmm(i.date)} ${i.e.desc||catName(i.e.cat)}${i.card?' ('+i.card.name+')':''}${i.parcel?` ${i.parcel.i}/${i.parcel.n}${n?`, faltam ${n}, restam ${money(i.amount*n)}`:''}`:''}: ${money(i.left)}`)});
-    L.push(`Subtotal: ${money(sum(its,'left'))}`)});
-  L.push('',`*Total: ${money(ps.prevLeft+ps.curLeft)}*`);if(S.settings.pix)L.push('',`Pix: ${S.settings.pix}`);
+  const p=S.people.find(x=>x.id===pid),R=curRange(),t=iso(today()),ps=personSummary(pid,R),SEP='━━━━━━━━━━━━━━━',open=i=>i.left>0.004;
+  const L=[`💳 *ACERTO DE ${MES[R.start.getMonth()].toUpperCase()}*`,`👤 ${p.name}  ·  ${ddmm(R.start)} a ${ddmm(R.end)}`];
+  const cardOf=i=>i.card?i.card.name:'Pix/dinheiro';
+  // Uma compra: data e descrição em cima, valor embaixo
+  const line=(i,withCard)=>{const n=i.parcel?i.parcel.n-i.parcel.i:0,pc=i.parcel?`${i.parcel.i}/${i.parcel.n}`:'';
+    const tag=withCard?[cardOf(i),pc].filter(Boolean).join(' '):pc?'parcela '+pc:i.e.owner==='split'?'dividido':'';
+    const out=[`• ${ddmm(i.date)} · ${i.e.desc||catName(i.e.cat)}${tag?` _(${tag})_`:''}`,i.paid>0?`   resta *${money(i.left)}* _de ${money(i.amount)}_`:`   *${money(i.left)}*`];
+    if(n)out.push(`   _faltam ${n} · restam ${money(i.amount*n)}_`);return out};
+  const block=(title,its,byCard)=>{L.push('',SEP,title);
+    if(byCard){const m=new Map();its.forEach(i=>{const k=cardOf(i);if(!m.has(k))m.set(k,[]);m.get(k).push(i)});
+      m.forEach((list,k)=>{L.push('',`💳 *${k}*`);list.forEach(i=>L.push(...line(i,false)))})}
+    else{L.push('');its.forEach(i=>L.push(...line(i,true)))}
+    L.push('',`➜ Subtotal: *${money(sum(its,'left'))}*`)};
+  const prev=ps.prev.filter(open),total=r2(ps.prevLeft+ps.curLeft);
+  if(prev.length)block('⚠️ *PENDENTE DE MESES ANTERIORES*',prev,false);
+  groupByPay(ps.cur.filter(open)).forEach(([d,its])=>block(`📅 *PAGAR ATÉ ${ddmm(d)}*${d<t?'  🔴 _atrasado_':''}`,its,true));
+  L.push('',SEP,total>0?`💰 *TOTAL A PAGAR: ${money(total)}*`:'✅ *Tudo em dia, nada a pagar!*');
+  const rec=sum(S.payments.filter(x=>x.pid===pid&&x.date>=iso(R.start)&&x.date<=iso(R.end)),'amount');
+  if(rec>0)L.push(`✅ Já recebido: ${money(rec)}`);
+  if(S.settings.pix&&total>0)L.push('',`🔑 *Pix:* ${S.settings.pix}`);
   return L.join('\n');
 }
 
