@@ -215,7 +215,7 @@ button.row:active{background:var(--fill2)}
    1. UTILITÁRIOS
    ========================================================= */
 const $=s=>document.querySelector(s);
-const VERSION=1, KEY='financeiro.v1';
+const VERSION=2, KEY='financeiro.v1';
 const pad2=n=>String(n).padStart(2,'0');
 const iso=d=>`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
 const D=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
@@ -249,7 +249,7 @@ function bigMoney(v){const neg=v<-0.004;const [i,c]=Math.abs(v).toFixed(2).split
 const DEFAULT_CATS=()=>[['Mercado',350],['Alimentação',300],['Combustível',400],['Transporte',100],['Lazer',150],['Saúde',100],['Casa',100],['Outros',100]].map(([name,limit])=>({id:uid(),name,limit}));
 function blank(){
   return{version:VERSION,
-    settings:{salary:0,salaryDay:4,overtimeAvg:0,overtimeDay:28,savePct:15,reserveGoal:1000,reserveSaved:0,mode:'auto',payOffset:3,pix:'',lastBackup:'',setupDone:false,lastCard:''},
+    settings:{salary:0,salaryMode:'business',salaryBizDay:5,salaryDay:5,overtimeAvg:0,overtimeDay:28,savePct:15,reserveGoal:1000,reserveSaved:0,mode:'auto',payOffset:3,pix:'',lastBackup:'',setupDone:false,lastCard:''},
     extras:[{id:uid(),name:'Uber',avg:0,freq:'week',weekday:'1'},{id:uid(),name:'Aulas particulares',avg:0,freq:'month',weekday:'1'}],
     fixed:[],
     debts:[{id:uid(),name:'Fatura parcelada',original:0,installment:0,n:0,paid:0,day:10},{id:uid(),name:'Empréstimo Nubank',original:0,installment:0,n:0,paid:0,day:10}],
@@ -264,7 +264,9 @@ function migrate(s){
   const b=blank();
   for(const k in b)if(s[k]===undefined)s[k]=b[k];
   s.settings={...b.settings,...s.settings};
-  // if(s.version<2){ ...converter dados... }
+  // v2: mês passa a começar no 5º dia útil; o salário já recebido acompanha o novo mês
+  if(s.version<2){const T=today(),old=rangeBy(T,(y,m)=>dayIn(y,m,s.settings.salaryDay)),nr=rangeBy(T,starter(s.settings)),a=iso(nr.start);
+    s.incomes.filter(i=>i.kind==='salary'&&i.date>=iso(old.start)&&i.date<=iso(old.end)).forEach(i=>{if(i.date<a)i.date=a;i.ref='salary:'+a});}
   s.version=VERSION;return s;
 }
 function load(){try{return JSON.parse(localStorage.getItem(KEY))}catch(e){return null}}
@@ -276,14 +278,26 @@ const hasData=()=>S.expenses.length||S.incomes.length||S.fixed.length||S.setting
 /* =========================================================
    3. CÁLCULOS (funções puras, testadas na seção 10)
    ========================================================= */
-// Mês financeiro: começa no dia do salário
-function monthRange(ref,sday){
-  let s=dayIn(ref.getFullYear(),ref.getMonth(),sday);
-  if(ref<s)s=dayIn(ref.getFullYear(),ref.getMonth()-1,sday);
-  const next=dayIn(s.getFullYear(),s.getMonth()+1,sday);
+// Feriados nacionais (fixos + Sexta-feira Santa)
+function easter(y){const a=y%19,b=Math.floor(y/100),c=y%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),mo=Math.floor((h+l-7*m+114)/31);return new Date(y,mo-1,((h+l-7*m+114)%31)+1)}
+function isHoliday(d){const k=pad2(d.getMonth()+1)+'-'+pad2(d.getDate());
+  return ['01-01','04-21','05-01','09-07','10-12','11-02','11-15','11-20','12-25'].includes(k)||iso(addDays(easter(d.getFullYear()),-2))===iso(d)}
+// N-ésimo dia útil do mês (segunda a sexta, sem feriados nacionais)
+function nthBusinessDay(y,m,n){const b=new Date(y,m,1);y=b.getFullYear();m=b.getMonth();let c=0;
+  for(let d=1;d<=dim(y,m);d++){const x=new Date(y,m,d),w=x.getDay();if(w>0&&w<6&&!isHoliday(x)&&++c===n)return x}
+  return new Date(y,m,dim(y,m));}
+// Mês financeiro: começa no dia do salário (dia fixo ou N-ésimo dia útil)
+function rangeBy(ref,startOf){
+  let s=startOf(ref.getFullYear(),ref.getMonth());
+  if(ref<s)s=startOf(ref.getFullYear(),ref.getMonth()-1);
+  const next=startOf(s.getFullYear(),s.getMonth()+1);
   return{start:s,end:addDays(next,-1),next};
 }
-const curRange=()=>monthRange(today(),S.settings.salaryDay);
+function monthRange(ref,sday){return rangeBy(ref,(y,m)=>dayIn(y,m,sday))}
+function starter(st){return(y,m)=>st.salaryMode==='business'?nthBusinessDay(y,m,st.salaryBizDay||5):dayIn(y,m,st.salaryDay)}
+const curRange=()=>rangeBy(today(),starter(S.settings));
+// Mês deslocado (−1 = anterior) em relação ao atual
+function rangeAt(off){const c=curRange(),sf=starter(S.settings);return rangeBy(sf(c.start.getFullYear(),c.start.getMonth()+off),sf)}
 // Juros mensal implícito (igual à TAXA do Excel), por bisseção
 function pvOf(r,pmt,n){return r?pmt*(1-Math.pow(1+r,-n))/r:pmt*n}
 function implicitRate(pv,pmt,n){
@@ -397,15 +411,15 @@ function groupByPay(items){const m=new Map();items.forEach(i=>{if(!m.has(i.pay))
    ========================================================= */
 // Média dos 3 últimos recebimentos (hora extra ou renda extra); senão o valor configurado
 function learnedAvg(key,fallback){
-  const l=S.incomes.filter(i=>key==='overtime'?i.kind==='overtime':i.xid===key).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,3);
+  const l=S.incomes.filter(i=>key==='overtime'||key==='salary'?i.kind===key:i.xid===key).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,3);
   return l.length?r2(sum(l,'amount')/l.length):fallback||0;
 }
 // Rendas previstas do mês (só contam quando marcadas como recebidas)
 function expected(R){
   const s=S.settings,a=iso(R.start),b=iso(R.end),inc=S.incomes.filter(i=>i.date>=a&&i.date<=b),out=[];
-  if(s.salary>0)out.push({ref:'salary:'+a,kind:'salary',name:'Salário',date:a,amount:s.salary});
+  {const sv=learnedAvg('salary',s.salary);if(sv>0)out.push({ref:'salary:'+a,kind:'salary',name:'Salário',date:a,amount:sv})}
   const ot=learnedAvg('overtime',s.overtimeAvg);
-  if(ot>0)out.push({ref:'overtime:'+a,kind:'overtime',name:'Hora extra',date:iso(dayIn(R.start.getFullYear(),R.start.getMonth()+(s.overtimeDay<s.salaryDay?1:0),s.overtimeDay)),amount:ot});
+  if(ot>0)out.push({ref:'overtime:'+a,kind:'overtime',name:'Hora extra',date:iso(dayIn(R.start.getFullYear(),R.start.getMonth()+(s.overtimeDay<R.start.getDate()?1:0),s.overtimeDay)),amount:ot});
   S.extras.filter(x=>x.freq==='week').forEach(x=>{const av=learnedAvg(x.id,x.avg);
     for(let d=new Date(R.start);d<=R.end;d=addDays(d,1))if(d.getDay()===+x.weekday)out.push({ref:x.id+':'+iso(d),kind:'extra',xid:x.id,name:x.name,date:iso(d),amount:av});});
   // Salário e hora extra: um por mês, mesmo se o dia mudar depois
@@ -527,7 +541,7 @@ function scHoje(){
 
 /* ----- MÊS ----- */
 function scMes(){
-  const s=S.settings,cur=curRange(),R=monthRange(dayIn(cur.start.getFullYear(),cur.start.getMonth()+ui.mOff,s.salaryDay),s.salaryDay);
+  const s=S.settings,R=rangeAt(ui.mOff);
   const st=stats(R),a=iso(R.start),b=iso(R.end),isCur=ui.mOff===0;
   const saiu=r2(st.fixed+st.debtInst+st.mine),sobra=r2(st.income-saiu);
   const exp=expected(R),fut=exp.filter(o=>!o.received&&o.date>iso(today())),got=S.incomes.filter(i=>i.date>=a&&i.date<=b&&!exp.some(o=>o.ref===i.ref));
@@ -632,7 +646,7 @@ function scAjustes(){
   const g=(t,rows)=>`<div class=ct>${t}</div><div class="card flush list">${rows.join('')}</div>`;
   const n=k=>S[k].length?S[k].length:'Nenhum';
   return head('Ajustes')+
-  g('Renda',[r('Salário',`${money(s.salary)} · dia ${s.salaryDay}`,'form','salary'),r('Hora extra',`${money(s.overtimeAvg)} · dia ${s.overtimeDay}`,'form','overtime'),r('Rendas extras',n('extras'),'list','extras')])+
+  g('Renda',[r('Salário',`${money(s.salary)} · ${s.salaryMode==='business'?s.salaryBizDay+'º dia útil':'dia '+s.salaryDay}`,'form','salary'),r('Hora extra',`${money(s.overtimeAvg)} · dia ${s.overtimeDay}`,'form','overtime'),r('Rendas extras',n('extras'),'list','extras')])+
   g('Cadastros',[r('Contas fixas',n('fixed'),'list','fixed'),r('Dívidas',n('debts'),'list','debts'),r('Cartões',n('cards'),'list','cards'),r('Pessoas',n('people'),'list','people'),r('Categorias e limites',n('categories'),'list','categories'),r('Metas',n('goals'),'list','goals'),r('Atalhos',n('shortcuts'),'list','shortcuts')])+
   g('Plano',[r('Plano da sobra',`${{auto:'Automático',foco:'Foco',equilibrado:'Equilibrado'}[s.mode]} · ${s.savePct}%`,'form','plan')])+
   g('Acertos',[r('Cobrar antes do vencimento',`${s.payOffset} dias`,'form','acerto'),r('Chave Pix',esc(s.pix)||'Não definida','form','acerto')])+
@@ -695,7 +709,7 @@ function openPix(pid){const ps=personSummary(pid);pad.buf=toBuf(ps.due);pad.targ
 
 // Formulários simples (configurações) e listas editáveis
 const FORMS={
-  salary:{t:'Salário',f:[['salary','Valor líquido','money'],['salaryDay','Dia em que cai','day']]},
+  salary:{t:'Salário',f:[['salary','Valor médio líquido','money'],['salaryMode','Quando cai','select',[['business','No N-ésimo dia útil'],['fixed','Num dia fixo do mês']]],['salaryBizDay','Qual dia útil (ex.: 5)','int'],['salaryDay','Dia fixo (se escolheu dia fixo)','day']]},
   overtime:{t:'Hora extra',f:[['overtimeAvg','Média mensal','money'],['overtimeDay','Dia previsto','day']]},
   plan:{t:'Plano da sobra',f:[['mode','Modo','select',[['auto','Automático'],['foco','Foco (tudo na dívida)'],['equilibrado','Equilibrado (90% dívida, 10% metas)']]],['savePct','Separar da renda livre (%)','int'],['reserveGoal','Meta da reserva','money'],['reserveSaved','Reserva atual','money']]},
   acerto:{t:'Acertos',f:[['payOffset','Cobrar quantos dias antes do vencimento','int'],['pix','Minha chave Pix','text']]},
@@ -737,7 +751,7 @@ function afterItem(kind,ctx){if(ctx==='wiz'){closeSheet();renderSetup()}else if(
    ========================================================= */
 const STEPS=[
   {t:'Finanlight',d:'Clareza nas suas finanças. Configure em poucos passos. Dá para pular qualquer etapa e ajustar depois em Ajustes.',welcome:1},
-  {t:'Salário',d:'O mês financeiro começa no dia em que o salário cai.',form:'salary'},
+  {t:'Salário',d:'O mês financeiro começa no dia em que o salário cai. Use o valor médio; o real você confirma quando cair.',form:'salary'},
   {t:'Hora extra',d:'Só entra no orçamento quando você marcar como recebida.',form:'overtime'},
   {t:'Renda extra',d:'Uber, aulas particulares e outros ganhos irregulares.',list:'extras'},
   {t:'Contas fixas',d:'O que vence todo mês: internet, celular, seguro…',list:'fixed'},
@@ -796,7 +810,7 @@ const ACT={
     closeSheet();change(g.length>1?`${g.length} parcelas excluídas`:'Gasto excluído',()=>{const ids=new Set(g.map(x=>x.id));S.expenses=S.expenses.filter(x=>!ids.has(x.id))})},
   bill:key=>markPaid(key),
   cats:()=>{const st=stats();openSheet(`<div class=sh-head><span class=w60></span><h2>Categorias</h2><button class=link data-a=close>OK</button></div><div class=hint>Quanto ainda dá por dia em cada uma</div><div class=go style="margin:0 -16px">${S.categories.map(c=>catRow(c,st,1)).join('')}</div><button class="btn sec" style="margin-top:8px" data-a=list data-id=categories>Editar limites</button>`)},
-  recv:ref=>{const o=expected(curRange()).find(x=>x.ref===ref)||expected(monthRange(dayIn(curRange().start.getFullYear(),curRange().start.getMonth()+ui.mOff,S.settings.salaryDay),S.settings.salaryDay)).find(x=>x.ref===ref);if(o)openRecv(o)},
+  recv:ref=>{const o=expected(curRange()).find(x=>x.ref===ref)||expected(rangeAt(ui.mOff)).find(x=>x.ref===ref);if(o)openRecv(o)},
   saveRecv:()=>{const v=r2(parseMoney(pad.buf)),o=pad.o;if(!(v>0))return toast('Digite o valor');closeSheet();
     change(`${o.name} recebido`,()=>S.incomes.push({id:uid(),date:o.date>iso(today())?iso(today()):o.date,amount:v,kind:o.kind,ref:o.ref,xid:o.xid,name:o.name}))},
   addIncome:()=>openAddIncome(),
@@ -848,8 +862,10 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)render()})
 
 /* Dados de exemplo (só pelo botão "Carregar exemplo") */
 function exampleState(){
-  const s=blank(),st=s.settings,T=today(),R=monthRange(T,4),el=diffDays(R.start,T);
-  Object.assign(st,{salary:1500,salaryDay:4,overtimeAvg:280,overtimeDay:28,pix:'seu.email@exemplo.com',setupDone:true,reserveSaved:350,lastBackup:iso(R.start)});
+  // No exemplo o mês começa 5 dias atrás, para já ter lançamentos espalhados
+  const s=blank(),st=s.settings,T=today();
+  Object.assign(st,{salary:1500,salaryMode:'fixed',salaryDay:addDays(T,-5).getDate(),overtimeAvg:280,overtimeDay:28,pix:'seu.email@exemplo.com',setupDone:true,reserveSaved:350});
+  const sf=starter(st),R=rangeBy(T,sf),el=diffDays(R.start,T);st.lastBackup=iso(R.start);
   const [nu,it,mg,cf,mf]=s.cards,gabi=s.people[0],mae={id:uid(),name:'Mãe'};s.people.push(mae);
   Object.assign(nu,{close:3,due:10});Object.assign(it,{close:27,due:5});Object.assign(mg,{close:15,due:22,owner:gabi.id});Object.assign(cf,{close:1,due:8});Object.assign(mf,{close:20,due:28});
   s.extras[0].avg=320;s.extras[1].avg=300;
@@ -866,7 +882,7 @@ function exampleState(){
   E(p(70),'Tênis',359.4,'Outros',mg,gabi.id,6);E(p(35),'Fone de ouvido',149.7,'Outros',it,'me',3);E(p(20),'Compras do mês',212.3,'Mercado',mf,mae.id);
   E(p(12),'Blusa',129.9,'Outros',mg,gabi.id);E(p(10),'Restaurante',78,'Alimentação',nu,'split',1,gabi.id);E(p(6),'Presente',60,'Lazer',null,gabi.id);
   E(p(9),'Gasolina',100,'Combustível',it);E(p(15),'Almoço',18,'Alimentação',nu);E(p(18),'Cinema',44,'Lazer',nu);E(p(25),'Mercado',143.2,'Mercado',cf);
-  const P=monthRange(addDays(R.start,-1),4),inc=(date,amount,kind,ref,name,xid)=>s.incomes.push({id:uid(),date,amount,kind,ref,name,xid});
+  const P=rangeBy(addDays(R.start,-1),sf),inc=(date,amount,kind,ref,name,xid)=>s.incomes.push({id:uid(),date,amount,kind,ref,name,xid});
   inc(iso(R.start),1500,'salary','salary:'+iso(R.start),'Salário');inc(d(1),300,'extra',uid(),'Aulas particulares',s.extras[1].id);
   inc(iso(P.start),1500,'salary','salary:'+iso(P.start),'Salário');inc(p(8),265,'overtime','overtime:'+iso(P.start),'Hora extra');
   for(let x=new Date(P.start);x<=T;x=addDays(x,1))if(x.getDay()===1&&iso(x)<=iso(T))inc(iso(x),290+(x.getDate()%4)*15,'extra',s.extras[0].id+':'+iso(x),'Uber',s.extras[0].id);
@@ -896,6 +912,10 @@ function runTests(){
   // Mês financeiro, faturas e plano
   let m=monthRange(D('2026-11-03'),4);ok('Dia 03/11 pertence ao mês 04/10–03/11',iso(m.start)==='2026-10-04'&&iso(m.end)==='2026-11-03');
   m=monthRange(D('2026-02-28'),31);ok('Salário dia 31 em fevereiro cai em 28/02',iso(m.start)==='2026-02-28');
+  ok('5º dia útil de nov/2026 = 09/11 (pula Finados)',iso(nthBusinessDay(2026,10,5))==='2026-11-09');
+  ok('5º dia útil de jan/2027 = 08/01 (pula Ano Novo)',iso(nthBusinessDay(2027,0,5))==='2027-01-08');
+  ok('5º dia útil de abr/2026 = 08/04 (pula Sexta-feira Santa)',iso(nthBusinessDay(2026,3,5))==='2026-04-08');
+  m=rangeBy(D('2026-11-08'),(y,mm)=>nthBusinessDay(y,mm,5));ok('Dia 08/11 ainda é do mês que começou no 5º dia útil de outubro',iso(m.start)==='2026-10-07'&&iso(m.end)==='2026-11-08');
   const c={close:3,due:10};ok('Compra 20/10 (fecha 3, vence 10) → fatura 10/11',iso(invoiceDue(c,'2026-10-20'))==='2026-11-10');
   ok('Compra no dia do fechamento vai para a próxima',iso(invoiceDue(c,'2026-11-03'))==='2026-12-10');
   ok('Vencimento antes do fechamento → mês seguinte',iso(invoiceDue({close:27,due:5},'2026-10-10'))==='2026-11-05');
