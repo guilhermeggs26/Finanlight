@@ -8,11 +8,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Finanças">
+<meta name="apple-mobile-web-app-title" content="Finanlight">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>Finanças</title>
+<title>Finanlight</title>
 <style>
 /* ===== TEMA ===== */
 :root{
@@ -408,7 +408,8 @@ function expected(R){
   if(ot>0)out.push({ref:'overtime:'+a,kind:'overtime',name:'Hora extra',date:iso(dayIn(R.start.getFullYear(),R.start.getMonth()+(s.overtimeDay<s.salaryDay?1:0),s.overtimeDay)),amount:ot});
   S.extras.filter(x=>x.freq==='week').forEach(x=>{const av=learnedAvg(x.id,x.avg);
     for(let d=new Date(R.start);d<=R.end;d=addDays(d,1))if(d.getDay()===+x.weekday)out.push({ref:x.id+':'+iso(d),kind:'extra',xid:x.id,name:x.name,date:iso(d),amount:av});});
-  return out.map(o=>({...o,received:inc.some(i=>i.ref===o.ref)})).sort((x,y)=>x.date.localeCompare(y.date));
+  // Salário e hora extra: um por mês, mesmo se o dia mudar depois
+  return out.map(o=>({...o,received:inc.some(i=>i.ref===o.ref||(o.kind!=='extra'&&i.kind===o.kind))})).sort((x,y)=>x.date.localeCompare(y.date));
 }
 // Categorias ordenadas pelo uso nos últimos 60 dias
 function catsByUse(){
@@ -735,7 +736,7 @@ function afterItem(kind,ctx){if(ctx==='wiz'){closeSheet();renderSetup()}else if(
    8. CONFIGURAÇÃO INICIAL (etapas que podem ser puladas)
    ========================================================= */
 const STEPS=[
-  {t:'Seu dinheiro, claro',d:'Configure em poucos passos. Dá para pular qualquer etapa e ajustar depois em Ajustes.',welcome:1},
+  {t:'Finanlight',d:'Clareza nas suas finanças. Configure em poucos passos. Dá para pular qualquer etapa e ajustar depois em Ajustes.',welcome:1},
   {t:'Salário',d:'O mês financeiro começa no dia em que o salário cai.',form:'salary'},
   {t:'Hora extra',d:'Só entra no orçamento quando você marcar como recebida.',form:'overtime'},
   {t:'Renda extra',d:'Uber, aulas particulares e outros ganhos irregulares.',list:'extras'},
@@ -759,6 +760,12 @@ function wizEnd(){S.settings.setupDone=true;save();$('#setup').hidden=true;rende
 /* =========================================================
    9. AÇÕES (cliques delegados) e BACKUP
    ========================================================= */
+// Trocar o dia do salário: o salário já recebido no mês acompanha o novo mês
+function changeSalaryDay(apply){
+  const old=curRange(),sal=S.incomes.filter(i=>i.kind==='salary'&&i.date>=iso(old.start)&&i.date<=iso(old.end));
+  apply();const nr=curRange(),a=iso(nr.start);
+  sal.forEach(i=>{if(i.date<a)i.date=a;i.ref='salary:'+a});
+}
 function markPaid(key){const u=upcoming(40).find(x=>x.key===key);if(!u)return;
   ask(esc(u.name),`${money(u.amount)} · vence ${ddmm(u.date)}`,'Marcar como pago',()=>change('Marcado como pago',()=>{S.paid[key]=1;if(u.kind==='divida'){const d=S.debts.find(x=>x.id===u.id);if(d)d.paid=Math.min(d.n,d.paid+1)}}))}
 async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const ta=document.createElement('textarea');ta.value=t;ta.style.cssText='position:fixed;opacity:0';document.body.appendChild(ta);ta.select();let ok=false;try{ok=document.execCommand('copy')}catch(_){}ta.remove();return ok}}
@@ -808,7 +815,9 @@ const ACT={
   delPay:id=>{const p=S.payments.find(x=>x.id===id);ask('Excluir Pix?',`${money(p.amount)} em ${ddmm(p.date)}`,'Excluir',()=>change('Pix excluído',()=>{S.payments=S.payments.filter(x=>x.id!==id)}),true)},
   payInst:id=>{const d=S.debts.find(x=>x.id===id);change(`Parcela ${d.paid+1}/${d.n} paga`,()=>{d.paid=Math.min(d.n,d.paid+1);S.paid[`divida:${id}:${iso(nextOcc(d.day,today()))}`]=1})},
   form:id=>openForm(id),
-  saveForm:id=>{readForm($('#frm'),FORMS[id].f,S.settings);save();closeSheet();render();toast('Salvo')},
+  saveForm:id=>{const fields=FORMS[id].f;
+    if(id==='salary')changeSalaryDay(()=>readForm($('#frm'),fields,S.settings));else readForm($('#frm'),fields,S.settings);
+    save();closeSheet();render();toast('Salvo')},
   list:k=>openList(k),
   add:(k,el)=>openEdit(k,null,el.dataset.ctx||''),
   edit:(k,el)=>openEdit(k,el.dataset.item,el.dataset.ctx||''),

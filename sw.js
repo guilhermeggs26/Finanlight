@@ -1,6 +1,6 @@
 // Service worker simples: guarda os arquivos e funciona offline.
 // Ao publicar uma nova versão, troque o nome do cache.
-const CACHE = 'financas-v1';
+const CACHE = 'finanlight-v3';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

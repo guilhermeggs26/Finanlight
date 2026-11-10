@@ -1,7 +1,7 @@
 {
-  "name": "Finanças",
-  "short_name": "Finanças",
-  "description": "Controle financeiro pessoal",
+  "name": "Finanlight",
+  "short_name": "Finanlight",
+  "description": "Clareza nas suas finanças",
   "lang": "pt-BR",
   "start_url": "./",
   "scope": "./",
