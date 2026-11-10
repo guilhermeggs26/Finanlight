@@ -318,6 +318,15 @@ function allocatePayments(items,total){
   const out=items.map(it=>{const p=Math.min(it.amount,left);left=r2(left-p);return{...it,paid:r2(p),left:r2(it.amount-p)}});
   return{items:out,credit:left};
 }
+// Pix com cartão escolhido: abate primeiro as compras daquele cartão (mais antigas antes);
+// o que sobrar vai para o item mais antigo de qualquer cartão. Itens já vêm em ordem.
+function allocateByCard(items,payments){
+  const out=items.map(it=>({...it,paid:0,left:it.amount}));let credit=0;
+  const take=(list,amt)=>{for(const it of list){if(amt<=0)break;const p=Math.min(it.left,amt);it.paid=r2(it.paid+p);it.left=r2(it.left-p);amt=r2(amt-p)}return amt};
+  [...payments].sort((a,b)=>a.date.localeCompare(b.date)).forEach(p=>{let amt=r2(Math.max(0,p.amount));
+    if(p.card)amt=take(out.filter(i=>(i.cardId||'')===p.card),amt);credit=r2(credit+take(out,amt))});
+  return{items:out,credit};
+}
 // Divisão da sobra por prioridade: reserva → dívida mais cara → metas → investimento
 function splitPlan(amount,o){
   let left=r2(Math.max(0,amount));const out={reserva:0,divida:0,metas:0,investir:0};
@@ -393,10 +402,10 @@ function personItems(pid){
   for(const e of S.expenses){
     const sh=e.owner===pid?1:(e.owner==='split'&&e.with===pid?1-(e.share??.5):0);if(!sh)continue;
     const card=S.cards.find(c=>c.id===e.card);
-    items.push({id:e.id,e,date:e.date,pay:card?iso(addDays(invoiceDue(card,e.date),-off)):e.date,amount:r2(e.amount*sh),card,parcel:e.parcel});
+    items.push({id:e.id,e,date:e.date,pay:card?iso(addDays(invoiceDue(card,e.date),-off)):e.date,amount:r2(e.amount*sh),card,cardId:e.card||'',parcel:e.parcel});
   }
   items.sort((x,y)=>x.pay.localeCompare(y.pay)||x.date.localeCompare(y.date));
-  return allocatePayments(items,sum(S.payments.filter(p=>p.pid===pid),'amount'));
+  return allocateByCard(items,S.payments.filter(p=>p.pid===pid));
 }
 function personSummary(pid,R=curRange()){
   const {items,credit}=personItems(pid),a=iso(R.start),b=iso(R.end),t=iso(today());
@@ -627,7 +636,7 @@ function scAcertos(){
   (ps.prevLeft>0?`<div class=ct>Pendente de meses anteriores<span class=num>${money(ps.prevLeft)}</span></div><div class="card flush list">${ps.prev.filter(i=>i.left>0).map(item).join('')}</div>`:'')+
   (ps.cur.length?groupByPay(ps.cur).map(([d,its])=>`<div class=ct>Pagar até ${ddmm(d)}<span class=num>${money(sum(its,'amount'))}</span></div><div class="card flush list">${its.map(item).join('')}</div>`).join('')
     :`<div class=ct>Este mês</div><div class=card>${empty(`Nada a acertar com ${esc(p.name)} neste mês.`,'Lançar gasto','fab')}</div>`)+
-  (pays.length?`<div class=ct>Pix recebidos</div><div class="card flush list">${pays.slice(0,8).map(x=>`<button class=row data-a=delPay data-id="${x.id}"><span class=grow><span class=ttl>${ddmm(x.date)}</span></span><span class="amt num ok-t">${money(x.amount)}</span></button>`).join('')}</div>`:'')+
+  (pays.length?`<div class=ct>Pix recebidos</div><div class="card flush list">${pays.slice(0,8).map(x=>`<button class=row data-a=delPay data-id="${x.id}"><span class=grow><span class=ttl>${ddmm(x.date)}</span><span class=meta>${x.card?esc(cardName(x.card)):"Qualquer cartão"}</span></span><span class="amt num ok-t">${money(x.amount)}</span></button>`).join('')}</div>`:'')+
   (ps.credit>0?`<p class=meta style="text-align:center">Crédito a favor de ${esc(p.name)}: ${money(ps.credit)}</p>`:'');
 }
 function acertoMsg(pid){
@@ -704,8 +713,17 @@ function openAddIncome(){const src=[['overtime','Hora extra'],...S.extras.map(x=
   const html=()=>`<div class=sh-head><button class=link data-a=close>Cancelar</button><h2>Nova renda</h2><span class=w60></span></div><div class=chips>${src.map(([k,l])=>chip('incSrc',k,l,pad.src===k)).join('')}</div><div id=amt class="amount num"></div><div class=hint>Entra no orçamento de hoje</div>${keypad()}<button class=btn data-a=saveInc>Salvar</button>`;
   pad.html=html;openSheet(html());updAmt()}
 // Pix recebido de uma pessoa
-function openPix(pid){const ps=personSummary(pid);pad.buf=toBuf(ps.due);pad.target='pix';pad.pid=pid;pad.hint=()=>{const v=parseMoney(pad.buf);return v>0&&v<ps.due?`Parcial: ficam ${money(ps.due-v)} pendentes`:'Abate do item mais antigo'};
-  openSheet(`<div class=sh-head><button class=link data-a=close>Cancelar</button><h2>Pix de ${esc(personName(pid))}</h2><span class=w60></span></div><div id=amt class="amount num"></div><div id=amtHint class=hint></div>${keypad()}<button class=btn data-a=savePix>Registrar Pix</button>`);updAmt()}
+// Quanto a pessoa deve até o fim do mês (num cartão, ou no total se card vazio)
+function pixDue(pid,card){const b=iso(curRange().end);return sum(personItems(pid).items.filter(i=>i.pay<=b&&(!card||i.cardId===card)),'left')}
+function pixHTML(){const pid=pad.pid,b=iso(curRange().end),its=personItems(pid).items.filter(i=>i.pay<=b&&i.left>0.004);
+  const cards=[...new Set(its.map(i=>i.cardId).filter(Boolean))];
+  return `<div class=sh-head><button class=link data-a=close>Cancelar</button><h2>Pix de ${esc(personName(pid))}</h2><span class=w60></span></div>
+  <div class=lbl>Para qual cartão?</div><div class=chips>${chip('pixCard','','Qualquer',!pad.card,` <span class=t2>${money(pixDue(pid,''))}</span>`)}${cards.map(c=>chip('pixCard',c,cardName(c),pad.card===c,` <span class=t2>${money(pixDue(pid,c))}</span>`)).join('')}</div>
+  <div id=amt class="amount num"></div><div id=amtHint class=hint></div>${keypad()}<button class=btn data-a=savePix>Registrar Pix</button>`}
+function openPix(pid){pad.pid=pid;pad.card='';pad.buf=toBuf(pixDue(pid,''));pad.target='pix';
+  pad.hint=()=>{const v=parseMoney(pad.buf),due=pixDue(pid,pad.card),nm=pad.card?' no '+cardName(pad.card):'';
+    return v>0&&v<due?`Parcial: ficam ${money(due-v)} pendentes${nm}`:v>due&&pad.card?`Quita${nm}; o resto abate o mais antigo`:pad.card?`Abate primeiro as compras${nm}`:'Abate do item mais antigo'};
+  openSheet(pixHTML());updAmt()}
 
 // Formulários simples (configurações) e listas editáveis
 const FORMS={
@@ -825,7 +843,8 @@ const ACT={
   ac:id=>{ui.ac=id;ui.tab='acertos';render(true);scrollTo(0,0)},
   copyMsg:async id=>{const ok=await copyText(acertoMsg(id));toast(ok?'Mensagem copiada':'Não foi possível copiar')},
   pix:id=>openPix(id),
-  savePix:()=>{const v=r2(parseMoney(pad.buf)),pid=pad.pid;if(!(v>0))return toast('Digite o valor');closeSheet();change(`Pix de ${money(v)} registrado`,()=>S.payments.push({id:uid(),pid,date:iso(today()),amount:v}))},
+  savePix:()=>{const v=r2(parseMoney(pad.buf)),pid=pad.pid,card=pad.card||'';if(!(v>0))return toast('Digite o valor');closeSheet();change(`Pix de ${money(v)} registrado${card?' ('+cardName(card)+')':''}`,()=>S.payments.push({id:uid(),pid,date:iso(today()),amount:v,card}))},
+  pixCard:id=>{pad.card=id;pad.buf=toBuf(pixDue(pad.pid,id));$('#sheet').innerHTML='<div class=grab></div>'+pixHTML();updAmt()},
   delPay:id=>{const p=S.payments.find(x=>x.id===id);ask('Excluir Pix?',`${money(p.amount)} em ${ddmm(p.date)}`,'Excluir',()=>change('Pix excluído',()=>{S.payments=S.payments.filter(x=>x.id!==id)}),true)},
   payInst:id=>{const d=S.debts.find(x=>x.id===id);change(`Parcela ${d.paid+1}/${d.n} paga`,()=>{d.paid=Math.min(d.n,d.paid+1);S.paid[`divida:${id}:${iso(nextOcc(d.day,today()))}`]=1})},
   form:id=>openForm(id),
@@ -909,6 +928,10 @@ function runTests(){
   let a=allocatePayments(it,120);ok('Pix de 120 quita o mais antigo e abate 20 do segundo',a.items[0].left===0&&a.items[1].left===30&&a.items[2].left===30);
   a=allocatePayments(it,200);ok('Pagamento a mais vira crédito de 20',a.credit===20&&a.items.every(x=>x.left===0));
   a=allocatePayments(it,0);ok('Sem pagamento, tudo pendente',sum(a.items,'left')===180);
+  const ic3=[{amount:100,cardId:'nu'},{amount:80,cardId:'mg'},{amount:60,cardId:'mg'}];
+  a=allocateByCard(ic3,[{date:'2026-11-10',amount:100,card:'mg'}]);ok('Pix de 100 "do Magalu" abate só o Magalu (80 + 20), Nubank intacto',a.items[0].left===100&&a.items[1].left===0&&a.items[2].left===40);
+  a=allocateByCard(ic3,[{date:'2026-11-10',amount:170,card:'mg'}]);ok('Pix do Magalu maior que a dívida no Magalu: sobra 30 vai para o Nubank',a.items[0].left===70&&a.items[2].left===0);
+  a=allocateByCard(ic3,[{date:'2026-11-10',amount:120,card:''}]);ok('Pix sem cartão abate do mais antigo',a.items[0].left===0&&a.items[1].left===60);
   // Mês financeiro, faturas e plano
   let m=monthRange(D('2026-11-03'),4);ok('Dia 03/11 pertence ao mês 04/10–03/11',iso(m.start)==='2026-10-04'&&iso(m.end)==='2026-11-03');
   m=monthRange(D('2026-02-28'),31);ok('Salário dia 31 em fevereiro cai em 28/02',iso(m.start)==='2026-02-28');
